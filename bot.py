@@ -1,6 +1,12 @@
+import asyncio
+import json
 import logging
 import os
+import random
 import sqlite3
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +26,16 @@ SLOT_MACHINE_COMBINATIONS = {
     64: "jackpot",
 }
 
+COMBINATION_TITLES = {
+    "jackpot": "777",
+    "two_sevens": "77X",
+    "three_bars": "три BAR",
+    "three_grapes": "три винограда",
+    "three_lemons": "три лимона",
+}
+
+DEFAULT_SMALL_GIFTS = ["сердечко", "медведь", "подарок", "роза"]
+
 
 @dataclass(frozen=True)
 class BotConfig:
@@ -27,9 +43,7 @@ class BotConfig:
     db_path: Path
     allowed_chat_ids: set[int]
     owner_user_ids: set[int]
-    jackpot_reply_text: str
-    three_of_kind_reply_text: str
-    two_sevens_reply_text: str
+    small_gifts: list[str]
 
 
 def parse_ids(value: str | None) -> set[int]:
@@ -44,6 +58,13 @@ def parse_ids(value: str | None) -> set[int]:
     return ids
 
 
+def parse_list(value: str | None) -> list[str]:
+    if not value:
+        return []
+
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
 def read_config() -> BotConfig:
     load_dotenv()
 
@@ -51,9 +72,7 @@ def read_config() -> BotConfig:
     db_path = Path(os.getenv("DATABASE_PATH", "bot_stats.sqlite3"))
     allowed_chat_ids = parse_ids(os.getenv("ALLOWED_CHAT_IDS"))
     owner_user_ids = parse_ids(os.getenv("OWNER_USER_IDS"))
-    jackpot_reply_text = os.getenv("JACKPOT_REPLY_TEXT", "777! Выпал jackpot.")
-    three_of_kind_reply_text = os.getenv("THREE_OF_KIND_REPLY_TEXT", "не совсем то")
-    two_sevens_reply_text = os.getenv("TWO_SEVENS_REPLY_TEXT", "срочно додэп")
+    small_gifts = parse_list(os.getenv("SMALL_GIFTS")) or DEFAULT_SMALL_GIFTS
 
     if not token:
         raise RuntimeError(
@@ -68,9 +87,7 @@ def read_config() -> BotConfig:
         db_path=db_path,
         allowed_chat_ids=allowed_chat_ids,
         owner_user_ids=owner_user_ids,
-        jackpot_reply_text=jackpot_reply_text,
-        three_of_kind_reply_text=three_of_kind_reply_text,
-        two_sevens_reply_text=two_sevens_reply_text,
+        small_gifts=small_gifts,
     )
 
 
@@ -220,11 +237,149 @@ def get_display_name(row: sqlite3.Row) -> str:
     return " ".join(part for part in name_parts if part) or "Без имени"
 
 
+def get_user_display_name(user: User) -> str:
+    if user.username:
+        return f"@{user.username}"
+
+    name_parts = [user.first_name, user.last_name]
+    return " ".join(part for part in name_parts if part) or "игрок"
+
+
 def classify_slot_value(value: int) -> str:
     if value in SLOT_MACHINE_TWO_SEVENS_FIRST_VALUES:
         return "two_sevens"
 
     return SLOT_MACHINE_COMBINATIONS.get(value, "other")
+
+
+def telegram_api_call(token: str, method: str, params: dict[str, object]) -> dict:
+    url = f"https://api.telegram.org/bot{token}/{method}"
+    data = urllib.parse.urlencode(params).encode("utf-8")
+    request = urllib.request.Request(url, data=data, method="POST")
+
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"Telegram API error: {details}") from error
+
+    if not payload.get("ok"):
+        description = payload.get("description", "unknown error")
+        raise RuntimeError(f"Telegram API error: {description}")
+
+    return payload["result"]
+
+
+def fetch_owner_gifts(token: str, owner_user_ids: set[int]) -> list[dict]:
+    gifts = []
+
+    for owner_user_id in sorted(owner_user_ids):
+        offset = ""
+        for _ in range(10):
+            result = telegram_api_call(
+                token,
+                "getUserGifts",
+                {
+                    "user_id": owner_user_id,
+                    "limit": 100,
+                    "offset": offset,
+                },
+            )
+
+            for owned_gift in result.get("gifts", []):
+                owned_gift["owner_user_id"] = owner_user_id
+                gifts.append(owned_gift)
+
+            offset = result.get("next_offset") or ""
+            if not offset:
+                break
+
+    return gifts
+
+
+def extract_gift_card(owned_gift: dict) -> dict[str, str] | None:
+    gift = owned_gift.get("gift") or {}
+
+    if owned_gift.get("type") == "unique":
+        name = gift.get("name")
+        base_name = gift.get("base_name") or name or "уникальный подарок"
+        number = gift.get("number")
+        title = f"{base_name} #{number}" if number else str(base_name)
+        url = f"https://t.me/nft/{urllib.parse.quote(str(name), safe='')}" if name else ""
+        return {"title": title, "url": url}
+
+    sticker = gift.get("sticker") or {}
+    emoji = sticker.get("emoji")
+    gift_id = gift.get("id")
+    title = f"обычный подарок {emoji}" if emoji else "обычный подарок"
+    if gift_id:
+        title = f"{title} ({gift_id})"
+
+    return {"title": title, "url": ""}
+
+
+def choose_owner_gift(owned_gifts: list[dict]) -> dict[str, str] | None:
+    gift_cards = [card for gift in owned_gifts if (card := extract_gift_card(gift))]
+    linked_gifts = [card for card in gift_cards if card["url"]]
+
+    if linked_gifts:
+        return random.choice(linked_gifts)
+
+    if gift_cards:
+        return random.choice(gift_cards)
+
+    return None
+
+
+async def build_jackpot_message(config: BotConfig, user: User) -> str:
+    player = get_user_display_name(user)
+
+    try:
+        owned_gifts = await asyncio.to_thread(
+            fetch_owner_gifts,
+            config.token,
+            config.owner_user_ids,
+        )
+    except RuntimeError as error:
+        logging.warning("Failed to fetch owner gifts: %s", error)
+        owned_gifts = []
+
+    gift = choose_owner_gift(owned_gifts)
+    if gift:
+        gift_line = f"{gift['title']}\n{gift['url']}" if gift["url"] else gift["title"]
+        return (
+            f"{player} выбил 777!\n\n"
+            f"Гифт owner: {gift_line}\n\n"
+            "Поздравляем, это jackpot."
+        )
+
+    return (
+        f"{player} выбил 777!\n\n"
+        "Jackpot есть, но бот не нашел видимых подарков на аккаунте owner.\n"
+        "Проверьте OWNER_USER_IDS и видимость подарков в профиле."
+    )
+
+
+def build_two_sevens_message(user: User) -> str:
+    player = get_user_display_name(user)
+    return (
+        f"{player} выбил 77X.\n\n"
+        "Первые две семерки на месте.\n"
+        "Срочно додэп."
+    )
+
+
+def build_three_of_kind_message(config: BotConfig, user: User, result: str) -> str:
+    player = get_user_display_name(user)
+    combination = COMBINATION_TITLES[result]
+    gift = random.choice(config.small_gifts)
+
+    return (
+        f"{player} выбил {combination}.\n\n"
+        f"Вы выиграли: {gift}.\n"
+        "Не совсем jackpot, но уже красиво."
+    )
 
 
 async def show_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -320,11 +475,15 @@ async def react_to_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     db.record_spin(update.effective_chat.id, update.effective_user.id, result)
 
     if result == "jackpot":
-        await update.message.reply_text(config.jackpot_reply_text)
+        await update.message.reply_text(
+            await build_jackpot_message(config, update.effective_user)
+        )
     elif result == "two_sevens":
-        await update.message.reply_text(config.two_sevens_reply_text)
+        await update.message.reply_text(build_two_sevens_message(update.effective_user))
     elif result in {"three_bars", "three_grapes", "three_lemons"}:
-        await update.message.reply_text(config.three_of_kind_reply_text)
+        await update.message.reply_text(
+            build_three_of_kind_message(config, update.effective_user, result)
+        )
 
 
 def main() -> None:
