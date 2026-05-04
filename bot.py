@@ -1,4 +1,3 @@
-
 import logging
 import os
 import sqlite3
@@ -6,15 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
-from telegram import Update
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
 from telegram import Update, User
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 
 SLOT_MACHINE_EMOJI = "🎰"
-SLOT_MACHINE_JACKPOT_VALUE = 64
-SLOT_MACHINE_THREE_OF_KIND_VALUES = {1, 22, 43}
 SLOT_MACHINE_TWO_SEVENS_FIRST_VALUES = {16, 32, 48}
 
 SLOT_MACHINE_COMBINATIONS = {
@@ -58,11 +53,11 @@ def read_config() -> BotConfig:
     jackpot_reply_text = os.getenv("JACKPOT_REPLY_TEXT", "777! Выпал jackpot.")
     three_of_kind_reply_text = os.getenv("THREE_OF_KIND_REPLY_TEXT", "не совсем то")
     two_sevens_reply_text = os.getenv("TWO_SEVENS_REPLY_TEXT", "срочно додэп")
+
+    if not token:
+        raise RuntimeError(
             "Не задан TELEGRAM_BOT_TOKEN. Создайте .env на основе .env.example."
         )
-
-    if not allowed_chat_ids:
-        logging.warning("ALLOWED_CHAT_IDS is empty. Slot tracking and /stats are disabled.")
 
     return BotConfig(
         token=token,
@@ -77,7 +72,6 @@ def read_config() -> BotConfig:
 
 class StatsDatabase:
     def __init__(self, path: Path) -> None:
-        self.path = path
         self.connection = sqlite3.connect(path)
         self.connection.row_factory = sqlite3.Row
         self.init_schema()
@@ -103,8 +97,7 @@ class StatsDatabase:
                 three_grapes INTEGER NOT NULL DEFAULT 0,
                 three_lemons INTEGER NOT NULL DEFAULT 0,
                 other_spins INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (chat_id, user_id),
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
+                PRIMARY KEY (chat_id, user_id)
             );
             """
         )
@@ -156,7 +149,7 @@ class StatsDatabase:
         self.connection.commit()
 
     def get_chat_totals(self, chat_id: int) -> sqlite3.Row:
-        row = self.connection.execute(
+        return self.connection.execute(
             """
             SELECT
                 COALESCE(SUM(total_spins), 0) AS total_spins,
@@ -171,9 +164,6 @@ class StatsDatabase:
             """,
             (chat_id,),
         ).fetchone()
-        if row is None:
-            raise RuntimeError("Stats query returned no totals.")
-        return row
 
     def get_user_rows(self, chat_id: int) -> list[sqlite3.Row]:
         return list(
@@ -279,7 +269,6 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def react_to_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if not update.message or not update.message.dice:
     if not update.effective_chat or not update.effective_user:
         return
 
@@ -291,11 +280,9 @@ async def react_to_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return
 
     dice = update.message.dice
-
     if dice.emoji != SLOT_MACHINE_EMOJI:
         return
 
-    if dice.value == SLOT_MACHINE_JACKPOT_VALUE:
     db: StatsDatabase = context.application.bot_data["db"]
     db.remember_user(update.effective_user)
 
@@ -304,18 +291,21 @@ async def react_to_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     if result == "jackpot":
         await update.message.reply_text(config.jackpot_reply_text)
-    elif dice.value in SLOT_MACHINE_TWO_SEVENS_FIRST_VALUES:
     elif result == "two_sevens":
         await update.message.reply_text(config.two_sevens_reply_text)
-    elif dice.value in SLOT_MACHINE_THREE_OF_KIND_VALUES:
     elif result in {"three_bars", "three_grapes", "three_lemons"}:
         await update.message.reply_text(config.three_of_kind_reply_text)
 
 
+def main() -> None:
+    logging.basicConfig(
+        format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+        level=logging.INFO,
     )
 
     config = read_config()
     db = StatsDatabase(config.db_path)
+
     application = Application.builder().token(config.token).build()
     application.bot_data["config"] = config
     application.bot_data["db"] = db
@@ -325,3 +315,8 @@ async def react_to_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     application.add_handler(MessageHandler(filters.ALL, react_to_message))
 
     logging.info("Bot started. Waiting for messages...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
