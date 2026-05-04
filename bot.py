@@ -38,7 +38,7 @@ def parse_ids(value: str | None) -> set[int]:
 
     ids = set()
     for item in value.split(","):
-        item = item.strip()
+        item = item.strip().lstrip("=")
         if item:
             ids.add(int(item))
     return ids
@@ -199,6 +199,10 @@ class StatsDatabase:
             )
         )
 
+    def reset_chat_stats(self, chat_id: int) -> None:
+        self.connection.execute("DELETE FROM slot_stats WHERE chat_id = ?", (chat_id,))
+        self.connection.commit()
+
 
 def is_allowed_chat(config: BotConfig, chat_id: int | None) -> bool:
     return chat_id is not None and chat_id in config.allowed_chat_ids
@@ -277,6 +281,23 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text("\n".join(lines))
 
 
+async def reset_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not update.effective_chat or not update.effective_user or not update.message:
+        return
+
+    config: BotConfig = context.application.bot_data["config"]
+    if not is_allowed_chat(config, update.effective_chat.id):
+        return
+
+    if not is_owner(config, update.effective_user.id):
+        return
+
+    db: StatsDatabase = context.application.bot_data["db"]
+    db.reset_chat_stats(update.effective_chat.id)
+
+    await update.message.reply_text("Статистика этого чата обнулена.")
+
+
 async def react_to_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_chat or not update.effective_user:
         return
@@ -320,6 +341,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("chatid", show_chat_id))
     application.add_handler(CommandHandler("stats", show_stats))
+    application.add_handler(CommandHandler("resetstats", reset_stats))
     application.add_handler(MessageHandler(filters.ALL, react_to_message))
 
     logging.info("Bot started. Waiting for messages...")
