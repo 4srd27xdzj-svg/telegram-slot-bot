@@ -10,6 +10,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 
 SLOT_MACHINE_EMOJI = "🎰"
+SLOT_MACHINE_JACKPOT_VALUE = 64
 SLOT_MACHINE_TWO_SEVENS_FIRST_VALUES = {16, 32, 48}
 
 SLOT_MACHINE_COMBINATIONS = {
@@ -59,6 +60,9 @@ def read_config() -> BotConfig:
             "Не задан TELEGRAM_BOT_TOKEN. Создайте .env на основе .env.example."
         )
 
+    if not allowed_chat_ids:
+        logging.warning("ALLOWED_CHAT_IDS is empty. Slot tracking and /stats are disabled.")
+
     return BotConfig(
         token=token,
         db_path=db_path,
@@ -72,6 +76,7 @@ def read_config() -> BotConfig:
 
 class StatsDatabase:
     def __init__(self, path: Path) -> None:
+        self.path = path
         self.connection = sqlite3.connect(path)
         self.connection.row_factory = sqlite3.Row
         self.init_schema()
@@ -97,7 +102,8 @@ class StatsDatabase:
                 three_grapes INTEGER NOT NULL DEFAULT 0,
                 three_lemons INTEGER NOT NULL DEFAULT 0,
                 other_spins INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (chat_id, user_id)
+                PRIMARY KEY (chat_id, user_id),
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
             );
             """
         )
@@ -149,7 +155,7 @@ class StatsDatabase:
         self.connection.commit()
 
     def get_chat_totals(self, chat_id: int) -> sqlite3.Row:
-        return self.connection.execute(
+        row = self.connection.execute(
             """
             SELECT
                 COALESCE(SUM(total_spins), 0) AS total_spins,
@@ -164,6 +170,9 @@ class StatsDatabase:
             """,
             (chat_id,),
         ).fetchone()
+        if row is None:
+            raise RuntimeError("Stats query returned no totals.")
+        return row
 
     def get_user_rows(self, chat_id: int) -> list[sqlite3.Row]:
         return list(
@@ -305,7 +314,6 @@ def main() -> None:
 
     config = read_config()
     db = StatsDatabase(config.db_path)
-
     application = Application.builder().token(config.token).build()
     application.bot_data["config"] = config
     application.bot_data["db"] = db
