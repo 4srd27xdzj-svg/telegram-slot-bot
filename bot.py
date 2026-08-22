@@ -5460,6 +5460,8 @@ def jackpot_button_reveal_keyboard(
             label = f"✅ {prize}⭐"
         elif is_selected:
             label = "✅ Пусто"
+        elif show_small_prizes:
+            label = "15/25⭐"
         else:
             label = "Пусто"
         buttons.append(
