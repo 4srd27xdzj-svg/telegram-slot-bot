@@ -71,6 +71,7 @@ GAME_MODE_CLASSIC = "classic"
 GAME_MODE_JACKPOT_BUTTONS = "jackpot_buttons"
 GAME_MODE_MINES = "mines"
 GAME_MODE_PLAYER_CHOICE = "player_choice"
+GAME_MODE_CASES = "cases"
 GAME_MODE_SETTING = "game_mode"
 SPIN_PRICE_STARS_SETTING = "spin_price_stars"
 DEFAULT_SPIN_PRICE_STARS = 2
@@ -89,6 +90,36 @@ DEFAULT_JACKPOT_BUTTON_STARS_MIN_PRICE = 5
 DEFAULT_JACKPOT_BUTTON_NFT_CHANCE_DENOMINATOR = 0
 DEFAULT_JACKPOT_BUTTON_NFT_CHANCE_STEP = 0
 JACKPOT_BUTTON_SMALL_PRIZES = [15, 25]
+CASES_COUNT_SETTING = "cases_count"
+CASES_LAYOUT_SETTING = "cases_layout"
+CASES_NFT_CHANCE_SETTING = "cases_nft_chance_denominator"
+DEFAULT_CASES_COUNT = 25
+DEFAULT_CASES_NFT_CHANCE_DENOMINATOR = 25
+CASE_STAR_PRIZES = (15, 25, 50, 100)
+CASE_BUTTON_ICON_ONLY_TEXT = "\u200b"
+CASES_CLOSED_LABEL_SETTING = "cases_closed_label"
+CASES_NFT_LABEL_SETTING = "cases_nft_label"
+CASES_STARS15_LABEL_SETTING = "cases_stars15_label"
+CASES_STARS25_LABEL_SETTING = "cases_stars25_label"
+CASES_STARS50_LABEL_SETTING = "cases_stars50_label"
+CASES_STARS100_LABEL_SETTING = "cases_stars100_label"
+CASES_CLOSED_ICON_SETTING = "cases_closed_icon_custom_emoji_id"
+CASES_NFT_ICON_SETTING = "cases_nft_icon_custom_emoji_id"
+CASES_STARS15_ICON_SETTING = "cases_stars15_icon_custom_emoji_id"
+CASES_STARS25_ICON_SETTING = "cases_stars25_icon_custom_emoji_id"
+CASES_STARS50_ICON_SETTING = "cases_stars50_icon_custom_emoji_id"
+CASES_STARS100_ICON_SETTING = "cases_stars100_icon_custom_emoji_id"
+CASES_CLOSED_STYLE_SETTING = "cases_closed_style"
+CASES_NFT_STYLE_SETTING = "cases_nft_style"
+CASES_STARS15_STYLE_SETTING = "cases_stars15_style"
+CASES_STARS25_STYLE_SETTING = "cases_stars25_style"
+CASES_STARS50_STYLE_SETTING = "cases_stars50_style"
+CASES_STARS100_STYLE_SETTING = "cases_stars100_style"
+CASES_SELECTED_STYLE_SETTING = "cases_selected_style"
+CASES_STARS15_VARIANTS_SETTING = "cases_stars15_variants"
+CASES_STARS25_VARIANTS_SETTING = "cases_stars25_variants"
+CASES_STARS50_VARIANTS_SETTING = "cases_stars50_variants"
+CASES_STARS100_VARIANTS_SETTING = "cases_stars100_variants"
 MINES_BUTTONS_SETTING = "mines_buttons"
 MINES_COUNT_SETTING = "mines_count"
 MINES_START_STARS_SETTING = "mines_start_stars"
@@ -565,6 +596,35 @@ class StatsDatabase:
                 resolved_at TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS case_rounds (
+                round_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                case_count INTEGER NOT NULL,
+                board_json TEXT NOT NULL DEFAULT '[]',
+                message_id INTEGER,
+                selected_position INTEGER,
+                result_type TEXT,
+                result_title TEXT,
+                result_url TEXT,
+                result_stars INTEGER,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS case_star_prize_choices (
+                round_id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                stars INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                payout_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TEXT,
+                FOREIGN KEY (round_id) REFERENCES case_rounds(round_id)
+            );
+
             CREATE TABLE IF NOT EXISTS small_gift_progress (
                 chat_id INTEGER NOT NULL,
                 user_id INTEGER NOT NULL,
@@ -811,6 +871,35 @@ class StatsDatabase:
                 status TEXT NOT NULL DEFAULT 'open',
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 resolved_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS case_rounds (
+                round_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                case_count INTEGER NOT NULL,
+                board_json TEXT NOT NULL DEFAULT '[]',
+                message_id INTEGER,
+                selected_position INTEGER,
+                result_type TEXT,
+                result_title TEXT,
+                result_url TEXT,
+                result_stars INTEGER,
+                status TEXT NOT NULL DEFAULT 'open',
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS case_star_prize_choices (
+                round_id INTEGER PRIMARY KEY,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                stars INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                payout_id INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                resolved_at TEXT,
+                FOREIGN KEY (round_id) REFERENCES case_rounds(round_id)
             );
 
             CREATE TABLE IF NOT EXISTS small_gift_progress (
@@ -3353,6 +3442,122 @@ class StatsDatabase:
         ).fetchone()
         return int(row["count"] or 0) if row else 0
 
+    def create_case_round(
+        self,
+        chat_id: int,
+        user_id: int,
+        case_count: int,
+        board: list[dict[str, object]],
+    ) -> int:
+        self.connection.execute(
+            """
+            INSERT INTO case_rounds (chat_id, user_id, case_count, board_json)
+            VALUES (?, ?, ?, ?)
+            """,
+            (chat_id, user_id, case_count, json.dumps(board, ensure_ascii=False)),
+        )
+        self.connection.commit()
+        return int(self.connection.execute("SELECT last_insert_rowid()").fetchone()[0])
+
+    def set_case_round_message_id(self, round_id: int, message_id: int) -> None:
+        self.connection.execute(
+            "UPDATE case_rounds SET message_id = ? WHERE round_id = ?",
+            (message_id, round_id),
+        )
+        self.connection.commit()
+
+    def get_case_round(self, round_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM case_rounds WHERE round_id = ?",
+            (round_id,),
+        ).fetchone()
+
+    def expire_open_case_rounds(self, chat_id: int, user_id: int) -> None:
+        self.connection.execute(
+            """
+            UPDATE case_rounds
+            SET status = 'expired', resolved_at = CURRENT_TIMESTAMP
+            WHERE chat_id = ? AND user_id = ? AND status = 'open'
+            """,
+            (chat_id, user_id),
+        )
+        self.connection.commit()
+
+    def resolve_case_round(
+        self,
+        round_id: int,
+        selected_position: int,
+        result_type: str,
+        result_title: str,
+        result_url: str,
+        result_stars: int | None,
+        board: list[dict[str, object]],
+    ) -> bool:
+        cursor = self.connection.execute(
+            """
+            UPDATE case_rounds
+            SET selected_position = ?,
+                result_type = ?,
+                result_title = ?,
+                result_url = ?,
+                result_stars = ?,
+                board_json = ?,
+                status = 'resolved',
+                resolved_at = CURRENT_TIMESTAMP
+            WHERE round_id = ? AND status = 'open'
+            """,
+            (
+                selected_position,
+                result_type,
+                result_title,
+                result_url,
+                result_stars,
+                json.dumps(board, ensure_ascii=False),
+                round_id,
+            ),
+        )
+        self.connection.commit()
+        return cursor.rowcount > 0
+
+    def create_case_star_prize_choice(
+        self,
+        round_id: int,
+        user_id: int,
+        chat_id: int,
+        stars: int,
+    ) -> None:
+        self.connection.execute(
+            """
+            INSERT OR REPLACE INTO case_star_prize_choices (round_id, user_id, chat_id, stars)
+            VALUES (?, ?, ?, ?)
+            """,
+            (round_id, user_id, chat_id, stars),
+        )
+        self.connection.commit()
+
+    def get_case_star_prize_choice(self, round_id: int) -> sqlite3.Row | None:
+        return self.connection.execute(
+            "SELECT * FROM case_star_prize_choices WHERE round_id = ?",
+            (round_id,),
+        ).fetchone()
+
+    def resolve_case_star_prize_choice(
+        self,
+        round_id: int,
+        status: str,
+        payout_id: int | None = None,
+    ) -> bool:
+        cursor = self.connection.execute(
+            """
+            UPDATE case_star_prize_choices
+            SET status = ?, payout_id = ?, resolved_at = CURRENT_TIMESTAMP
+            WHERE round_id = ? AND status = 'pending'
+            """,
+            (status, payout_id, round_id),
+        )
+        self.connection.commit()
+        return cursor.rowcount > 0
+
     def set_bot_setting(self, setting_key: str, setting_value: object) -> None:
         self.connection.execute(
             """
@@ -3537,6 +3742,7 @@ def get_game_mode(db: StatsDatabase) -> str:
         GAME_MODE_JACKPOT_BUTTONS,
         GAME_MODE_MINES,
         GAME_MODE_PLAYER_CHOICE,
+        GAME_MODE_CASES,
     }:
         return value
     return GAME_MODE_CLASSIC
@@ -3674,6 +3880,259 @@ def save_jackpot_button_settings(
         if nft_chance_step < 0:
             raise ValueError("Шаг NFT не может быть отрицательным.")
         db.set_bot_setting(JACKPOT_BUTTON_NFT_CHANCE_STEP_SETTING, nft_chance_step)
+
+
+def get_cases_count(db: StatsDatabase) -> int:
+    value = db.get_bot_setting(CASES_COUNT_SETTING, DEFAULT_CASES_COUNT)
+    try:
+        return max(4, min(64, int(value)))
+    except (TypeError, ValueError):
+        return DEFAULT_CASES_COUNT
+
+
+def default_cases_layout(case_count: int) -> dict[str, int]:
+    """Return a full prize layout whose total always equals ``case_count``."""
+    weights = {"stars15": 10, "stars25": 8, "stars50": 4, "stars100": 2, "nft": 1}
+    total_weight = sum(weights.values())
+    layout = {
+        kind: max(0, case_count * weight // total_weight)
+        for kind, weight in weights.items()
+    }
+    layout["nft"] = max(1, layout["nft"])
+    layout["stars15"] += case_count - sum(layout.values())
+    if layout["stars15"] < 0:
+        overflow = -layout["stars15"]
+        layout["stars15"] = 0
+        for kind in ("stars25", "stars50", "stars100", "nft"):
+            reduction = min(overflow, layout[kind])
+            layout[kind] -= reduction
+            overflow -= reduction
+            if not overflow:
+                break
+    return layout
+
+
+def get_cases_layout(db: StatsDatabase) -> dict[str, int]:
+    case_count = get_cases_count(db)
+    default = default_cases_layout(case_count)
+    raw_layout = db.get_bot_setting(CASES_LAYOUT_SETTING, default)
+    if not isinstance(raw_layout, dict):
+        return default
+    try:
+        layout = {kind: max(0, int(raw_layout.get(kind, 0))) for kind in default}
+    except (TypeError, ValueError):
+        return default
+    return layout if sum(layout.values()) == case_count else default
+
+
+def save_cases_settings(
+    db: StatsDatabase,
+    case_count: int | None = None,
+    layout: dict[str, int] | None = None,
+    nft_chance_denominator: int | None = None,
+) -> None:
+    current_count = get_cases_count(db)
+    if case_count is not None:
+        if not 4 <= case_count <= 64:
+            raise ValueError("Поле кейсов должно содержать от 4 до 64 клеток.")
+        db.set_bot_setting(CASES_COUNT_SETTING, case_count)
+        current_count = case_count
+        if layout is None:
+            db.set_bot_setting(CASES_LAYOUT_SETTING, default_cases_layout(case_count))
+
+    if layout is not None:
+        expected = {"stars15", "stars25", "stars50", "stars100", "nft"}
+        if set(layout) != expected or any(value < 0 for value in layout.values()):
+            raise ValueError("Состав кейсов задан неверно.")
+        if sum(layout.values()) != current_count:
+            raise ValueError(f"Сумма клеток должна быть ровно {current_count}.")
+        db.set_bot_setting(CASES_LAYOUT_SETTING, layout)
+
+    if nft_chance_denominator is not None:
+        if nft_chance_denominator < 1:
+            raise ValueError("Шанс NFT задается как 1/N, где N не меньше 1.")
+        db.set_bot_setting(CASES_NFT_CHANCE_SETTING, nft_chance_denominator)
+
+
+def get_cases_nft_chance_denominator(db: StatsDatabase) -> int:
+    value = db.get_bot_setting(
+        CASES_NFT_CHANCE_SETTING,
+        DEFAULT_CASES_NFT_CHANCE_DENOMINATOR,
+    )
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return DEFAULT_CASES_NFT_CHANCE_DENOMINATOR
+
+
+def parse_cases_layout(value: str) -> dict[str, int]:
+    aliases = {
+        "15": "stars15", "25": "stars25", "50": "stars50", "100": "stars100",
+        "nft": "nft", "нфт": "nft",
+    }
+    layout: dict[str, int] = {}
+    for token in value.replace(",", " ").split():
+        if "=" not in token:
+            continue
+        key, raw_count = token.split("=", 1)
+        kind = aliases.get(key.strip().lower())
+        if kind is None:
+            raise ValueError("Допустимы: 15, 25, 50, 100 и nft.")
+        layout[kind] = int(raw_count)
+    if set(layout) != {"stars15", "stars25", "stars50", "stars100", "nft"}:
+        raise ValueError("Формат: 15=10 25=8 50=4 100=2 nft=1")
+    return layout
+
+
+def case_result_type_from_target(value: str, allow_closed: bool = True) -> str:
+    normalized = value.strip().lower()
+    targets = {
+        "closed": "closed", "close": "closed", "box": "closed", "кейc": "closed", "кейс": "closed", "закрытая": "closed",
+        "nft": "nft", "нфт": "nft",
+        "15": "stars15", "stars15": "stars15",
+        "25": "stars25", "stars25": "stars25",
+        "50": "stars50", "stars50": "stars50",
+        "100": "stars100", "stars100": "stars100",
+        "selected": "selected", "chosen": "selected", "выбранная": "selected",
+    }
+    result_type = targets.get(normalized)
+    if result_type is None or (not allow_closed and result_type in {"closed", "selected", "nft"}):
+        raise ValueError("Доступно: closed, 15, 25, 50, 100, nft, selected.")
+    return result_type
+
+
+def case_setting_key(result_type: str, kind: str) -> str | None:
+    settings = {
+        "label": {
+            "closed": CASES_CLOSED_LABEL_SETTING, "nft": CASES_NFT_LABEL_SETTING,
+            "stars15": CASES_STARS15_LABEL_SETTING, "stars25": CASES_STARS25_LABEL_SETTING,
+            "stars50": CASES_STARS50_LABEL_SETTING, "stars100": CASES_STARS100_LABEL_SETTING,
+        },
+        "icon": {
+            "closed": CASES_CLOSED_ICON_SETTING, "nft": CASES_NFT_ICON_SETTING,
+            "stars15": CASES_STARS15_ICON_SETTING, "stars25": CASES_STARS25_ICON_SETTING,
+            "stars50": CASES_STARS50_ICON_SETTING, "stars100": CASES_STARS100_ICON_SETTING,
+        },
+        "style": {
+            "closed": CASES_CLOSED_STYLE_SETTING, "nft": CASES_NFT_STYLE_SETTING,
+            "stars15": CASES_STARS15_STYLE_SETTING, "stars25": CASES_STARS25_STYLE_SETTING,
+            "stars50": CASES_STARS50_STYLE_SETTING, "stars100": CASES_STARS100_STYLE_SETTING,
+            "selected": CASES_SELECTED_STYLE_SETTING,
+        },
+        "variants": {
+            "stars15": CASES_STARS15_VARIANTS_SETTING, "stars25": CASES_STARS25_VARIANTS_SETTING,
+            "stars50": CASES_STARS50_VARIANTS_SETTING, "stars100": CASES_STARS100_VARIANTS_SETTING,
+        },
+    }
+    return settings.get(kind, {}).get(result_type)
+
+
+def default_case_label(result_type: str) -> str:
+    return {
+        "closed": "🎁", "nft": "NFT", "stars15": "15⭐", "stars25": "25⭐",
+        "stars50": "50⭐", "stars100": "100⭐",
+    }.get(result_type, "?")
+
+
+def get_case_label(db: StatsDatabase, result_type: str) -> str:
+    setting_key = case_setting_key(result_type, "label")
+    value = str(db.get_bot_setting(setting_key, default_case_label(result_type))) if setting_key else ""
+    return value or default_case_label(result_type)
+
+
+def get_case_icon_id(db: StatsDatabase, result_type: str) -> str:
+    setting_key = case_setting_key(result_type, "icon")
+    return str(db.get_bot_setting(setting_key, "")).strip() if setting_key else ""
+
+
+def parse_case_button_style(value: str) -> str:
+    aliases = {
+        "": "", "default": "", "none": "", "обычный": "", "серый": "",
+        "primary": "primary", "blue": "primary", "синий": "primary",
+        "success": "success", "green": "success", "зелёный": "success", "зеленый": "success",
+        "danger": "danger", "red": "danger", "красный": "danger",
+    }
+    style = aliases.get(value.strip().lower())
+    if style is None:
+        raise ValueError("Цвета: default, primary/blue, success/green, danger/red.")
+    return style
+
+
+def get_case_button_style(db: StatsDatabase, result_type: str) -> str:
+    setting_key = case_setting_key(result_type, "style")
+    default = "success" if result_type == "selected" else ""
+    value = str(db.get_bot_setting(setting_key, default)).strip().lower() if setting_key else ""
+    return value if value in {"", "primary", "success", "danger"} else default
+
+
+def get_case_variants(db: StatsDatabase, result_type: str) -> list[dict[str, str]]:
+    setting_key = case_setting_key(result_type, "variants")
+    raw_variants = db.get_bot_setting(setting_key, []) if setting_key else []
+    if not isinstance(raw_variants, list):
+        return []
+    variants = []
+    for item in raw_variants:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label", ""))
+        icon_id = str(item.get("icon_id", "")).strip()
+        if label or icon_id:
+            variants.append({"label": label, "icon_id": icon_id})
+    return variants
+
+
+def save_case_variants(db: StatsDatabase, result_type: str, variants: list[dict[str, str]]) -> None:
+    setting_key = case_setting_key(result_type, "variants")
+    if setting_key is None:
+        raise ValueError("Фигурки можно задавать только для 15, 25, 50 или 100.")
+    db.set_bot_setting(setting_key, variants)
+
+
+def first_custom_emoji_from_message(message: object | None) -> tuple[str, str]:
+    if message is None:
+        return "", ""
+    for entities, parser_name in (
+        (getattr(message, "entities", None) or [], "parse_entity"),
+        (getattr(message, "caption_entities", None) or [], "parse_caption_entity"),
+    ):
+        for entity in entities:
+            entity_type = getattr(getattr(entity, "type", ""), "value", getattr(entity, "type", ""))
+            if entity_type != "custom_emoji":
+                continue
+            icon_id = str(getattr(entity, "custom_emoji_id", "") or "")
+            if not icon_id:
+                continue
+            try:
+                emoji_text = str(getattr(message, parser_name)(entity))
+            except (AttributeError, TypeError, ValueError):
+                emoji_text = ""
+            return icon_id, emoji_text
+    return "", ""
+
+
+def case_appearance_text(db: StatsDatabase) -> str:
+    labels = [
+        f"{name}: {get_case_label(db, result_type)}; цвет {get_case_button_style(db, result_type) or 'default'}"
+        for name, result_type in (("закрытая", "closed"), ("NFT", "nft"), ("15⭐", "stars15"),
+                                  ("25⭐", "stars25"), ("50⭐", "stars50"), ("100⭐", "stars100"))
+    ]
+    variants = ", ".join(
+        f"{stars}⭐: {len(get_case_variants(db, f'stars{stars}'))}"
+        for stars in CASE_STAR_PRIZES
+    )
+    return (
+        "Оформление кейсов\n\n"
+        + "\n".join(labels)
+        + f"\nВыбранная клетка: {get_case_button_style(db, 'selected') or 'default'}\n"
+        + f"Варианты фигурок: {variants}\n\n"
+        "Подпись: /game cases label closed 🎁\n"
+        "Цвет: /game cases color 50 success\n"
+        "Фигурка: /game cases variant add 50 💎\n"
+        "Удалить фигурку: /game cases variant remove 50 1\n"
+        "Очистить набор: /game cases variant clear 50\n\n"
+        "Для premium emoji отправь его отдельным сообщением и ответь на него: "
+        "/game cases label 50 или /game cases variant add 50."
+    )
 
 
 def get_mines_button_count(db: StatsDatabase) -> int:
@@ -4017,6 +4476,8 @@ def game_mode_label(mode: str) -> str:
         return "минки"
     if mode == GAME_MODE_PLAYER_CHOICE:
         return "выбор игрока"
+    if mode == GAME_MODE_CASES:
+        return "кейсы"
     return "классический"
 
 
@@ -5791,6 +6252,311 @@ async def handle_star_prize_choice(update: Update, context: ContextTypes.DEFAULT
             pass
         return
 
+    await query.answer()
+
+
+def case_inline_button(
+    text: str,
+    callback_data: str,
+    icon_custom_emoji_id: str = "",
+    style: str = "",
+) -> InlineKeyboardButton:
+    api_kwargs: dict[str, object] = {}
+    if icon_custom_emoji_id:
+        api_kwargs["icon_custom_emoji_id"] = icon_custom_emoji_id
+    if style:
+        api_kwargs["style"] = style
+    return InlineKeyboardButton(
+        text or CASE_BUTTON_ICON_ONLY_TEXT,
+        callback_data=callback_data,
+        api_kwargs=api_kwargs or None,
+    )
+
+
+def case_result_label(db: StatsDatabase, cell: dict[str, object], selected: bool = False) -> str:
+    result_type = str(cell.get("result_type", ""))
+    label = str(cell.get("label") or get_case_label(db, result_type))
+    return f"✅ {label}" if selected and label != CASE_BUTTON_ICON_ONLY_TEXT else label
+
+
+def case_board_from_row(row: sqlite3.Row) -> list[dict[str, object]]:
+    try:
+        board = json.loads(row["board_json"] or "[]")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(board, list):
+        return []
+    return [cell for cell in board if isinstance(cell, dict)]
+
+
+async def build_cases_board(
+    config: BotConfig,
+    db: StatsDatabase,
+) -> list[dict[str, object]]:
+    layout = get_cases_layout(db)
+    board: list[dict[str, object]] = []
+    for stars in CASE_STAR_PRIZES:
+        for _ in range(layout[f"stars{stars}"]):
+            result_type = f"stars{stars}"
+            cell: dict[str, object] = {"position": 0, "result_type": result_type, "stars": stars}
+            variants = get_case_variants(db, result_type)
+            if variants:
+                cell.update(random.choice(variants))
+            board.append(cell)
+
+    owner_gift = await choose_owner_gift_from_api(config, db) if layout["nft"] else None
+    if owner_gift:
+        for _ in range(layout["nft"]):
+            board.append(
+                {
+                    "position": 0,
+                    "result_type": "nft",
+                    "title": owner_gift["title"],
+                    "url": owner_gift["url"],
+                }
+            )
+    else:
+        # A case cannot promise an NFT that the owner does not have available.
+        board.extend(
+            {"position": 0, "result_type": "stars15", "stars": 15}
+            for _ in range(layout["nft"])
+        )
+
+    random.shuffle(board)
+    for position, cell in enumerate(board, start=1):
+        cell["position"] = position
+    return board
+
+
+def choose_case_result_type(board: list[dict[str, object]], db: StatsDatabase) -> str:
+    nft_available = any(cell.get("result_type") == "nft" for cell in board)
+    if nft_available and random.randint(1, get_cases_nft_chance_denominator(db)) == 1:
+        return "nft"
+    star_cells = [cell for cell in board if str(cell.get("result_type", "")).startswith("stars")]
+    return str(random.choice(star_cells).get("result_type")) if star_cells else "nft"
+
+
+def place_case_result_at_position(
+    board: list[dict[str, object]],
+    position: int,
+    result_type: str,
+) -> list[dict[str, object]]:
+    selected_index = next(
+        (index for index, cell in enumerate(board) if int(cell.get("position", 0)) == position),
+        None,
+    )
+    matching_indexes = [
+        index for index, cell in enumerate(board)
+        if str(cell.get("result_type", "")) == result_type
+    ]
+    if selected_index is None or not matching_indexes:
+        return board
+    source_index = random.choice(matching_indexes)
+    selected_cell_position = int(board[selected_index].get("position", 0))
+    source_cell_position = int(board[source_index].get("position", 0))
+    board[selected_index], board[source_index] = board[source_index], board[selected_index]
+    # Swapping contents must not move either physical square on the keyboard.
+    board[selected_index]["position"] = selected_cell_position
+    board[source_index]["position"] = source_cell_position
+    return board
+
+
+def case_keyboard(db: StatsDatabase, round_id: int, case_count: int) -> InlineKeyboardMarkup:
+    side = max(2, int(case_count ** 0.5 + 0.9999))
+    buttons = [
+        case_inline_button(
+            get_case_label(db, "closed"),
+            f"case:{round_id}:{position}",
+            get_case_icon_id(db, "closed"),
+            get_case_button_style(db, "closed"),
+        )
+        for position in range(1, case_count + 1)
+    ]
+    return InlineKeyboardMarkup([buttons[index:index + side] for index in range(0, len(buttons), side)])
+
+
+def revealed_case_keyboard(
+    db: StatsDatabase,
+    round_id: int,
+    case_count: int,
+    board: list[dict[str, object]],
+    selected_position: int,
+) -> InlineKeyboardMarkup:
+    cells_by_position = {int(cell.get("position", 0)): cell for cell in board}
+    side = max(2, int(case_count ** 0.5 + 0.9999))
+    buttons = [
+        case_inline_button(
+            case_result_label(db, cells_by_position.get(position, {}), position == selected_position),
+            f"case:{round_id}:{position}",
+            str(cells_by_position.get(position, {}).get("icon_id") or get_case_icon_id(
+                db, str(cells_by_position.get(position, {}).get("result_type", ""))
+            )),
+            get_case_button_style(db, "selected" if position == selected_position else str(
+                cells_by_position.get(position, {}).get("result_type", "")
+            )),
+        )
+        for position in range(1, case_count + 1)
+    ]
+    return InlineKeyboardMarkup([buttons[index:index + side] for index in range(0, len(buttons), side)])
+
+
+def case_star_prize_choice_keyboard(round_id: int, stars: int) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(f"Получить {stars}⭐ на баланс", callback_data=f"caseprize:balance:{round_id}")],
+            [InlineKeyboardButton(f"Получить подарок за {stars}⭐", callback_data=f"caseprize:gift:{round_id}")],
+        ]
+    )
+
+
+async def send_case_challenge(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    config: BotConfig,
+    db: StatsDatabase,
+) -> None:
+    if not update.message or not update.effective_chat or not update.effective_user:
+        return
+    db.expire_open_case_rounds(update.effective_chat.id, update.effective_user.id)
+    board = await build_cases_board(config, db)
+    case_count = len(board)
+    if not case_count:
+        return
+    round_id = db.create_case_round(
+        update.effective_chat.id,
+        update.effective_user.id,
+        case_count,
+        board,
+    )
+    text = (
+        f"{get_user_display_name(update.effective_user)} выбил 777!\n\n"
+        f"Открой одну из {case_count} клеток.\n"
+        f"Шанс NFT: 1/{get_cases_nft_chance_denominator(db)}."
+    )
+    sent = await update.message.reply_text(text, reply_markup=case_keyboard(db, round_id, case_count))
+    db.set_case_round_message_id(round_id, sent.message_id)
+
+
+async def handle_case_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.from_user or not query.data or not query.message:
+        return
+    try:
+        _, round_id_text, position_text = query.data.split(":", 2)
+        round_id, position = int(round_id_text), int(position_text)
+    except ValueError:
+        await query.answer()
+        return
+
+    config: BotConfig = context.application.bot_data["config"]
+    db: StatsDatabase = context.application.bot_data["db"]
+    round_row = db.get_case_round(round_id)
+    if not round_row:
+        await query.answer("Раунд кейсов не найден.", show_alert=True)
+        return
+    if int(round_row["user_id"]) != query.from_user.id:
+        await query.answer("Это не твой кейс.", show_alert=True)
+        return
+    if round_row["status"] != "open":
+        await query.answer("Этот кейс уже открыт или сгорел.", show_alert=True)
+        return
+
+    board = case_board_from_row(round_row)
+    if not board or not 1 <= position <= int(round_row["case_count"]):
+        await query.answer("Поле кейсов повреждено. Обратись к администратору.", show_alert=True)
+        return
+    result_type = choose_case_result_type(board, db)
+    board = place_case_result_at_position(board, position, result_type)
+    selected_cell = next(cell for cell in board if int(cell.get("position", 0)) == position)
+    result_type = str(selected_cell.get("result_type", "stars15"))
+    stars = int(selected_cell.get("stars", 0)) if result_type.startswith("stars") else None
+    title = str(selected_cell.get("title") or (f"{stars}⭐" if stars else "NFT"))
+    url = str(selected_cell.get("url") or "")
+    if not db.resolve_case_round(round_id, position, result_type, title, url, stars, board):
+        await query.answer("Этот кейс уже открыт.", show_alert=True)
+        return
+
+    try:
+        await query.message.edit_reply_markup(
+            reply_markup=revealed_case_keyboard(db, round_id, int(round_row["case_count"]), board, position)
+        )
+    except TelegramError:
+        pass
+
+    if result_type == "nft":
+        await query.answer("NFT найден!", show_alert=True)
+        gift = {"title": title, "url": url}
+        await context.bot.send_message(
+            chat_id=int(round_row["chat_id"]),
+            text=f"{get_user_display_name(query.from_user)} открыл клетку #{position} и выиграл NFT: {title}.",
+        )
+        await create_and_notify_payout(
+            context, config, db, int(round_row["chat_id"]), query.from_user,
+            "nft", "cases", round_id, title, gift,
+        )
+        await process_reward_tasks(update, context, nft_win=True)
+        return
+
+    if stars is None:
+        await query.answer("В этой клетке пусто.", show_alert=True)
+        return
+    db.create_case_star_prize_choice(round_id, query.from_user.id, int(round_row["chat_id"]), stars)
+    await query.answer(f"Выигрыш: {stars}⭐", show_alert=True)
+    await context.bot.send_message(
+        chat_id=int(round_row["chat_id"]),
+        text=(f"{get_user_display_name(query.from_user)} открыл клетку #{position} и выиграл {stars}⭐.\n"
+              "Выбери, зачислить Stars на баланс или запросить подарок."),
+        reply_markup=case_star_prize_choice_keyboard(round_id, stars),
+    )
+
+
+async def handle_case_star_prize_choice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    if not query or not query.from_user or not query.data or not query.message:
+        return
+    try:
+        _, action, round_id_text = query.data.split(":", 2)
+        round_id = int(round_id_text)
+    except ValueError:
+        await query.answer()
+        return
+
+    config: BotConfig = context.application.bot_data["config"]
+    db: StatsDatabase = context.application.bot_data["db"]
+    choice = db.get_case_star_prize_choice(round_id)
+    if not choice:
+        await query.answer("Выбор приза не найден.", show_alert=True)
+        return
+    if int(choice["user_id"]) != query.from_user.id:
+        await query.answer("Это не твой приз.", show_alert=True)
+        return
+    if choice["status"] != "pending":
+        await query.answer("Этот приз уже выбран.", show_alert=True)
+        return
+
+    stars = int(choice["stars"])
+    chat_id = int(choice["chat_id"])
+    if action == "balance":
+        if not db.resolve_case_star_prize_choice(round_id, "balance"):
+            await query.answer("Этот приз уже выбран.", show_alert=True)
+            return
+        db.record_prize_economy(chat_id, query.from_user.id, stars, "cases", round_id)
+        balance = db.add_stars_balance(query.from_user.id, stars)
+        await query.answer(f"+{stars}⭐ на баланс.", show_alert=True)
+        await query.message.edit_text(f"{stars}⭐ зачислены на баланс. Сейчас: {balance}⭐")
+        return
+    if action == "gift":
+        if not db.resolve_case_star_prize_choice(round_id, "gift"):
+            await query.answer("Этот приз уже выбран.", show_alert=True)
+            return
+        db.record_prize_economy(chat_id, query.from_user.id, stars, "cases", round_id)
+        await create_and_notify_payout(
+            context, config, db, chat_id, query.from_user,
+            "stars_gift", "cases", round_id, f"Подарок за {stars}⭐",
+        )
+        await query.answer("Запрос на подарок отправлен.", show_alert=True)
+        await query.message.edit_text(f"Запрос на подарок за {stars}⭐ отправлен администратору.")
+        return
     await query.answer()
 
 
@@ -10718,6 +11484,7 @@ def game_settings_text(db: StatsDatabase) -> str:
     nft_chance_step = get_jackpot_button_nft_chance_step(db)
     mines_buttons = get_mines_button_count(db)
     mines_count = get_mines_count(db)
+    cases_layout = get_cases_layout(db)
     variations = get_mines_variations(db)
     displayed_variations = variations[:20]
     variations_text = "\n".join(
@@ -10745,6 +11512,10 @@ def game_settings_text(db: StatsDatabase) -> str:
         f"+{get_mines_increment_stars(db)}⭐ за безопасную кнопку.\n\n"
         f"Лестница минок: {get_mines_prize_steps_text(db)}\n"
         f"Вариации минок:\n{variations_text}\n"
+        f"Кейсы: {get_cases_count(db)} клеток; состав "
+        f"15/25/50/100/NFT = {cases_layout['stars15']}/{cases_layout['stars25']}/"
+        f"{cases_layout['stars50']}/{cases_layout['stars100']}/{cases_layout['nft']}; "
+        f"шанс NFT 1/{get_cases_nft_chance_denominator(db)}.\n"
         f"Комиссия сервиса: {get_service_commission_percent(db):g}% от цены прокрута.\n\n"
         "Формула ранга: 1 очко = 5⭐.\n"
         "Любая цена: /game price 37\n"
@@ -10753,6 +11524,10 @@ def game_settings_text(db: StatsDatabase) -> str:
         "Шаг NFT: /game nftstep 4\n"
         "Порог Stars в коробках: /game starsmin 1\n"
         "Режим выбора: /game mode choice\n"
+        "Кейсы: /game mode cases, /game cases field 25, "
+        "/game cases layout 15=10 25=8 50=4 100=2 nft=1, "
+        "/game cases nftchance 1/25\n"
+        "Оформление кейсов: /game cases appearance\n"
         "Минки: /game mode mines, /game minesbuttons 9, "
         "/game minescount 3, /game minesstart 15, /game minesstep 5\n"
         "Лестница минок: /game minessteps 9 3 10,18,30,50,80,120\n"
@@ -10780,6 +11555,10 @@ def game_settings_keyboard(db: StatsDatabase) -> InlineKeyboardMarkup:
         InlineKeyboardButton(
             f"{'✓ ' if mode == GAME_MODE_PLAYER_CHOICE else ''}Выбор",
             callback_data=f"game:mode:{GAME_MODE_PLAYER_CHOICE}",
+        ),
+        InlineKeyboardButton(
+            f"{'✓ ' if mode == GAME_MODE_CASES else ''}Кейсы",
+            callback_data=f"game:mode:{GAME_MODE_CASES}",
         ),
     ]
     price_options = list(GAME_PRICE_PRESETS)
@@ -10862,6 +11641,8 @@ async def manage_game_settings(update: Update, context: ContextTypes.DEFAULT_TYP
             db.set_bot_setting(GAME_MODE_SETTING, GAME_MODE_MINES)
         elif action in {"choice", "choose", "both", "выбор", "оба"} and len(context.args) == 1:
             db.set_bot_setting(GAME_MODE_SETTING, GAME_MODE_PLAYER_CHOICE)
+        elif action in {"cases", "case", "кейсы", "кейс"} and len(context.args) == 1:
+            db.set_bot_setting(GAME_MODE_SETTING, GAME_MODE_CASES)
         elif action in {"mode", "режим"} and len(context.args) >= 2:
             requested_mode = context.args[1].lower()
             if requested_mode in {"classic", "old", "классика", "обычный"}:
@@ -10872,8 +11653,93 @@ async def manage_game_settings(update: Update, context: ContextTypes.DEFAULT_TYP
                 db.set_bot_setting(GAME_MODE_SETTING, GAME_MODE_MINES)
             elif requested_mode in {"choice", "choose", "both", "выбор", "оба"}:
                 db.set_bot_setting(GAME_MODE_SETTING, GAME_MODE_PLAYER_CHOICE)
+            elif requested_mode in {"cases", "case", "кейсы", "кейс"}:
+                db.set_bot_setting(GAME_MODE_SETTING, GAME_MODE_CASES)
             else:
-                await update.message.reply_text("Режимы: classic, buttons, mines или choice.")
+                await update.message.reply_text("Режимы: classic, buttons, mines, choice или cases.")
+                return
+        elif action in {"cases", "case", "кейсы", "кейс"} and len(context.args) == 2 and context.args[1].lower() in {"appearance", "style", "оформление"}:
+            await update.message.reply_text(case_appearance_text(db))
+            return
+        elif action in {"cases", "case", "кейсы", "кейс"} and len(context.args) >= 3:
+            subaction = context.args[1].lower()
+            value_text = " ".join(context.args[2:])
+            try:
+                if subaction in {"field", "count", "cells", "поле", "клетки"}:
+                    save_cases_settings(
+                        db,
+                        case_count=parse_integer_from_token(value_text, "количество клеток"),
+                    )
+                elif subaction in {"layout", "composition", "состав"}:
+                    save_cases_settings(db, layout=parse_cases_layout(value_text))
+                elif subaction in {"nftchance", "chance", "nft", "шанс", "шанснфт"}:
+                    save_cases_settings(
+                        db,
+                        nft_chance_denominator=parse_chance_denominator(value_text, "шанс NFT 1/N"),
+                    )
+                elif subaction in {"label", "text", "подпись", "лейбл"}:
+                    result_type = case_result_type_from_target(context.args[2], allow_closed=True)
+                    if result_type == "selected":
+                        raise ValueError("Для выбранной клетки настраивается только цвет: /game cases color selected success")
+                    direct_value = " ".join(context.args[3:]).strip()
+                    source_message = update.message.reply_to_message if not direct_value and update.message.reply_to_message else update.message
+                    label = direct_value or str(getattr(source_message, "text", "") or getattr(source_message, "caption", "") or "").strip()
+                    icon_id, emoji_text = first_custom_emoji_from_message(source_message)
+                    if emoji_text:
+                        label = label.replace(emoji_text, "", 1).strip()
+                    if direct_value.lower() in {"clear", "reset", "очистить"}:
+                        label, icon_id = default_case_label(result_type), ""
+                    if not label and not icon_id:
+                        raise ValueError("Подпись или premium emoji не найдены.")
+                    db.set_bot_setting(case_setting_key(result_type, "label"), label or CASE_BUTTON_ICON_ONLY_TEXT)
+                    db.set_bot_setting(case_setting_key(result_type, "icon"), icon_id)
+                elif subaction in {"color", "colour", "style", "цвет"}:
+                    result_type = case_result_type_from_target(context.args[2], allow_closed=True)
+                    if len(context.args) < 4:
+                        raise ValueError("Формат: /game cases color 50 success")
+                    db.set_bot_setting(
+                        case_setting_key(result_type, "style"),
+                        parse_case_button_style(context.args[3]),
+                    )
+                elif subaction in {"variant", "variants", "figure", "фигурка", "фигурки"}:
+                    if len(context.args) < 4:
+                        raise ValueError("Формат: /game cases variant add 50 💎")
+                    variant_action = context.args[2].lower()
+                    result_type = case_result_type_from_target(context.args[3], allow_closed=False)
+                    variants = get_case_variants(db, result_type)
+                    if variant_action in {"add", "добавить"}:
+                        direct_value = " ".join(context.args[4:]).strip()
+                        source_message = update.message.reply_to_message if not direct_value and update.message.reply_to_message else update.message
+                        label = direct_value or str(getattr(source_message, "text", "") or getattr(source_message, "caption", "") or "").strip()
+                        icon_id, emoji_text = first_custom_emoji_from_message(source_message)
+                        if emoji_text:
+                            label = label.replace(emoji_text, "", 1).strip()
+                        if not label and not icon_id:
+                            raise ValueError("Фигурка или premium emoji не найдены.")
+                        variants.append({"label": label or CASE_BUTTON_ICON_ONLY_TEXT, "icon_id": icon_id})
+                        save_case_variants(db, result_type, variants)
+                    elif variant_action in {"remove", "delete", "del", "удалить"}:
+                        if len(context.args) < 5:
+                            raise ValueError("Формат: /game cases variant remove 50 1")
+                        index = int(context.args[4]) - 1
+                        if not 0 <= index < len(variants):
+                            raise ValueError("Фигурки с таким номером нет.")
+                        variants.pop(index)
+                        save_case_variants(db, result_type, variants)
+                    elif variant_action in {"clear", "reset", "очистить"}:
+                        save_case_variants(db, result_type, [])
+                    elif variant_action in {"list", "show", "список"}:
+                        await update.message.reply_text(case_appearance_text(db))
+                        return
+                    else:
+                        raise ValueError("Действия: add, remove, clear, list.")
+                else:
+                    raise ValueError(
+                        "Формат: /game cases field 25, /game cases layout 15=10 25=8 50=4 100=2 nft=1 "
+                        "или /game cases nftchance 1/25"
+                    )
+            except ValueError as error:
+                await update.message.reply_text(str(error))
                 return
         elif action in {"mines", "mine", "минки"} and len(context.args) >= 3:
             subaction = context.args[1].lower()
@@ -11198,6 +12064,7 @@ async def handle_game_settings_choice(update: Update, context: ContextTypes.DEFA
             GAME_MODE_JACKPOT_BUTTONS,
             GAME_MODE_MINES,
             GAME_MODE_PLAYER_CHOICE,
+            GAME_MODE_CASES,
         }:
             await query.answer()
             return
@@ -13524,6 +14391,8 @@ async def react_to_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -
                 db,
                 stats=user_stats,
             )
+        elif game_mode == GAME_MODE_CASES:
+            await send_case_challenge(update, context, config, db)
         elif game_mode == GAME_MODE_MINES:
             await send_mines_variation_choice(
                 update.message,
@@ -13720,6 +14589,8 @@ def main() -> None:
         )
     )
     application.add_handler(CallbackQueryHandler(handle_jackpot_button_choice, pattern="^jpbtn:"))
+    application.add_handler(CallbackQueryHandler(handle_case_choice, pattern="^case:"))
+    application.add_handler(CallbackQueryHandler(handle_case_star_prize_choice, pattern="^caseprize:"))
     application.add_handler(CallbackQueryHandler(handle_mine_choice, pattern="^mine:"))
     application.add_handler(CallbackQueryHandler(handle_star_prize_choice, pattern="^starprize:"))
     application.add_handler(CallbackQueryHandler(handle_game_settings_choice, pattern="^game:"))
